@@ -1,6 +1,7 @@
 const DEFAULT_SCORELOG_FILES = [
   "json/demo1.json",
-  "json/demo2.json"
+  "json/demo2.json",
+  "json/Suomipeli2025_freeciv21-score.json"
 ];
 
 async function loadScorelog(fileName) {
@@ -29,6 +30,42 @@ function buildOptions(tag) {
       title: { text: "Value" }
     },
     legend: { position: "bottom" },
+
+    tooltip: {
+      shared: true,
+      intersect: false,
+      followCursor: true,
+      // custom renderer ensures we list every series even when Apex's
+      // internal "series" array is truncated for huge datasets.
+      custom: function ({series, seriesIndex, dataPointIndex, w}) {
+        let html = '<div class="tooltip-custom">';
+        // try to pull the x value from whatever is available
+        const xval =
+          (w.globals.seriesX && w.globals.seriesX[0]
+            ? w.globals.seriesX[0][dataPointIndex]
+            : dataPointIndex);
+        html += `<div><strong>Turn ${xval}</strong></div>`;
+        w.config.series.forEach((s, idx) => {
+          // skip collapsed (hidden) series
+          if (
+            w.globals.collapsedSeries &&
+            w.globals.collapsedSeries.indexOf(idx) !== -1
+          ) {
+            return;
+          }
+          const val =
+            w.globals.series && w.globals.series[idx]
+              ? w.globals.series[idx][dataPointIndex]
+              : null;
+          html += `<div><span style="font-weight:bold;">${s.name}</span>: ${
+            val !== null && val !== undefined ? val : "–"
+          }</div>`;
+        });
+        html += "</div>";
+        return html;
+      }
+    },
+
     noData: { text: "Select a tag to view data" }
   };
 }
@@ -116,6 +153,12 @@ function showGovLegend(show) {
 function updateChart(chart, seriesByTag, tagId) {
   const tagBlock = seriesByTag[tagId];
   if (!tagBlock) {
+    chart.updateSeries([]);
+    showGovLegend(false);
+    return;
+  }
+  // Defensive: check tagBlock and tagBlock.series
+  if (!tagBlock || !Array.isArray(tagBlock.series)) {
     chart.updateSeries([]);
     showGovLegend(false);
     return;
