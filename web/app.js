@@ -1,7 +1,8 @@
 const DEFAULT_SCORELOG_FILES = [
+  "json/Suomipeli2025_freeciv21-score.json",
   "json/demo1.json",
-  "json/demo2.json",
-  "json/Suomipeli2025_freeciv21-score.json"
+  "json/demo2.json"
+
 ];
 
 async function loadScorelog(fileName) {
@@ -14,6 +15,7 @@ async function loadScorelog(fileName) {
 
 function buildOptions(tag) {
   return {
+    series: [],
     chart: {
       type: "line",
       height: 420,
@@ -39,13 +41,14 @@ function buildOptions(tag) {
       // internal "series" array is truncated for huge datasets.
       custom: function ({series, seriesIndex, dataPointIndex, w}) {
         let html = '<div class="tooltip-custom">';
+        const configuredSeries = Array.isArray(w.config.series) ? w.config.series : [];
         // try to pull the x value from whatever is available
         const xval =
           (w.globals.seriesX && w.globals.seriesX[0]
             ? w.globals.seriesX[0][dataPointIndex]
             : dataPointIndex);
         html += `<div><strong>Turn ${xval}</strong></div>`;
-        w.config.series.forEach((s, idx) => {
+        configuredSeries.forEach((s, idx) => {
           // skip collapsed (hidden) series
           if (
             w.globals.collapsedSeries &&
@@ -173,14 +176,6 @@ function updateChart(chart, seriesByTag, tagId) {
   const fileSelect = document.getElementById("fileSelect");
   const tagSelect = document.getElementById("tagSelect");
   const status = document.getElementById("status");
-  // Determine initial tag for tooltip customization
-  let initialTag = null;
-  try {
-    const payload = await loadScorelog(fileSelect.value);
-    initialTag = Object.values(payload.seriesByTag || {})[0]?.tag || null;
-  } catch (e) {}
-  const chart = new ApexCharts(document.querySelector("#chart"), buildOptions(initialTag));
-  chart.render();
 
   const files = Array.isArray(window.SCORELOG_FILES)
     ? window.SCORELOG_FILES
@@ -190,6 +185,9 @@ function updateChart(chart, seriesByTag, tagId) {
 
   populateFileSelect(fileSelect, files);
   fileSelect.value = getRequestedFile(files);
+
+  const chart = new ApexCharts(document.querySelector("#chart"), buildOptions(null));
+  chart.render();
 
   async function loadAndRender(fileName) {
     status.textContent = `Loading ${fileName}...`;
