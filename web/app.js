@@ -16,6 +16,10 @@ let playerStatsSort = {
   key: "max",
   direction: "desc"
 };
+let currentChartState = {
+  tagName: null,
+  chartSeries: []
+};
 const BASE_SERIES_COLORS = [
   "#1f77b4",
   "#d62728",
@@ -106,6 +110,85 @@ function getChartSeries(seriesList) {
   });
 }
 
+function normalizeRange(axis) {
+  if (!axis) {
+    return null;
+  }
+
+  const min = Number(axis.min);
+  const max = Number(axis.max);
+  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+    return null;
+  }
+
+  return min <= max ? { min, max } : { min: max, max: min };
+}
+
+function getVisibleStackedExtents(seriesList, xRange) {
+  if (!Array.isArray(seriesList) || seriesList.length === 0) {
+    return null;
+  }
+
+  const totalsByTurn = new Map();
+
+  seriesList.forEach((series) => {
+    if (!series || !Array.isArray(series.data)) {
+      return;
+    }
+
+    series.data.forEach((point) => {
+      if (!point || typeof point.x !== "number" || typeof point.y !== "number") {
+        return;
+      }
+      if (xRange && (point.x < xRange.min || point.x > xRange.max)) {
+        return;
+      }
+
+      totalsByTurn.set(point.x, (totalsByTurn.get(point.x) || 0) + point.y);
+    });
+  });
+
+  if (totalsByTurn.size === 0) {
+    return null;
+  }
+
+  let max = 0;
+  totalsByTurn.forEach((total) => {
+    max = Math.max(max, total);
+  });
+
+  const padding = max === 0 ? 1 : max * 0.08;
+  return {
+    min: 0,
+    max: max + padding,
+    forceNiceScale: true
+  };
+}
+
+function syncStackedZoomYAxis(chart, xaxis) {
+  if (!chart || !Boolean(window.SCORELOG_STACKED) || !currentChartState.tagName) {
+    return;
+  }
+
+  const currentRange = chart?.w?.globals
+    ? { min: chart.w.globals.minX, max: chart.w.globals.maxX }
+    : null;
+  const range = normalizeRange(xaxis) || normalizeRange(currentRange);
+  const yaxis = getVisibleStackedExtents(currentChartState.chartSeries, range);
+  if (!yaxis) {
+    return;
+  }
+
+  chart.updateOptions({
+    yaxis: {
+      title: { text: currentChartState.tagName },
+      min: yaxis.min,
+      max: yaxis.max,
+      forceNiceScale: yaxis.forceNiceScale
+    }
+  }, false, false, false);
+}
+
 function buildOptions(tag) {
   const stacked = Boolean(window.SCORELOG_STACKED);
 
@@ -116,14 +199,58 @@ function buildOptions(tag) {
       height: 620,
       stacked,
       stackType: "normal",
-      toolbar: { show: true },
-      zoom: { enabled: true }
+      toolbar: {
+        show: true,
+        autoSelected: "zoom"
+      },
+      zoom: {
+        enabled: true,
+        type: "x",
+        autoScaleYaxis: true
+      },
+      events: {
+        zoomed: function (chartContext, { xaxis }) {
+          syncStackedZoomYAxis(chartContext, xaxis);
+        },
+        scrolled: function (chartContext, { xaxis }) {
+          syncStackedZoomYAxis(chartContext, xaxis);
+        },
+        beforeResetZoom: function (chartContext) {
+          if (!Boolean(window.SCORELOG_STACKED) || !currentChartState.tagName) {
+            return undefined;
+          }
+
+          window.requestAnimationFrame(() => {
+            const fullYaxis = getVisibleStackedExtents(currentChartState.chartSeries, null);
+            if (!fullYaxis) {
+              return;
+            }
+
+            chartContext.updateOptions({
+              yaxis: {
+                title: { text: currentChartState.tagName },
+                min: fullYaxis.min,
+                max: fullYaxis.max,
+                forceNiceScale: fullYaxis.forceNiceScale
+              }
+            }, false, false, false);
+          });
+
+          return undefined;
+        }
+      }
     },
     stroke: { width: 2 },
     fill: { opacity: stacked ? 0.75 : 1 },
     markers: { size: 0 },
     xaxis: {
       type: "numeric",
+      decimalsInFloat: 0,
+      labels: {
+        formatter: function (value) {
+          return `${Math.round(Number(value))}`;
+        }
+      },
       title: { text: "Turn" }
     },
     yaxis: {
@@ -311,18 +438,30 @@ function buildPlayerStatsHeader(label, key, align, sortState) {
 function updateChart(chart, seriesByTag, tagId) {
   const tagBlock = seriesByTag[tagId];
   if (!tagBlock) {
+    currentChartState = {
+      tagName: null,
+      chartSeries: []
+    };
     chart.updateSeries([]);
     showGovLegend(false);
     return;
   }
   // Defensive: check tagBlock and tagBlock.series
   if (!tagBlock || !Array.isArray(tagBlock.series)) {
+    currentChartState = {
+      tagName: null,
+      chartSeries: []
+    };
     chart.updateSeries([]);
     showGovLegend(false);
     return;
   }
   const chartSeries = getChartSeries(tagBlock.series);
   const colors = getSeriesColors(chartSeries.length);
+  currentChartState = {
+    tagName: tagBlock.tag,
+    chartSeries
+  };
   chart.updateOptions(buildOptions(tagBlock.tag), false, true);
   chart.updateOptions({
     colors,
@@ -331,7 +470,6 @@ function updateChart(chart, seriesByTag, tagId) {
   chart.updateSeries(chartSeries);
   showGovLegend(tagBlock.tag === "gov");
 
-  // Show maximum and cumulative values per player in a table, or message if not available
   let statsDiv = document.getElementById("max-values");
   if (!statsDiv) {
     statsDiv = document.createElement("div");
@@ -344,7 +482,6 @@ function updateChart(chart, seriesByTag, tagId) {
     const tagName = tagBlock.tag;
     const cumulativeAllowed = CUMULATIVE_INCLUDED_TAGS.includes(tagName);
     const sortState = getEffectivePlayerStatsSort(cumulativeAllowed);
-    // Build stats: max value, turn, cumulative
     let statList = tagBlock.series
       .filter(s => s && Array.isArray(s.data) && s.data.length > 0)
       .map(s => {
@@ -390,7 +527,6 @@ function updateChart(chart, seriesByTag, tagId) {
       }
       html += `</tr>`;
     }
-    // Add TOTAL row for cumulative
     if (cumulativeAllowed) {
       html += `<tr style="font-weight:bold;background:#003399;color:#ffff33"><td style="padding:2px 8px 2px 0">TOTAL</td><td></td><td></td><td style="text-align:right;padding:2px 8px">${totalSum}</td><td style="text-align:right;padding:2px 8px">100.0</td></tr>`;
     }
